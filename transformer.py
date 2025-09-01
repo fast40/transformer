@@ -1,3 +1,5 @@
+import time
+
 from typing_extensions import NoExtraItems
 import torch
 from torch import nn
@@ -28,16 +30,40 @@ N_EMBED = 32
 HEAD_SIZE = 32
 
 
+class AttentionHead(nn.Module):
+    def __init__(self, head_size):  # head_size is the dimension of the key/query/value vectors
+        super().__init__()
+
+        self.key = nn.Linear(N_EMBED, head_size, bias=False)
+        self.query = nn.Linear(N_EMBED, head_size, bias=False)
+        self.value = nn.Linear(N_EMBED, head_size, bias=False)
+
+        self.register_buffer('mask', ~torch.tril(torch.ones(CONTEXT_LENGTH, CONTEXT_LENGTH)).bool())
+        self.scale_factor = head_size ** -0.5
+
+    def forward(self, x):
+        # yeah im a beast what are you going to do about it
+        return (self.key(x) @ self.query(x).transpose(-2, -1) * self.scale_factor).masked_fill(self.mask, -torch.inf).softmax(dim=-1) @ self.value(x)
+
+
+class MultiHeadAttention(nn.Module):
+    def __init__(self, n_heads, head_size):
+        super().__init__()
+
+        self.heads = nn.ModuleList(AttentionHead(head_size) for _ in range(n_heads))  # nn.ModuleList is basically a normal list but it registers the modules you put in it
+
+    def forward(self, x):
+        return torch.cat([head(x) for head in self.heads], dim=-1)
+
+
 class Model(nn.Module):
     def __init__(self):
         super().__init__()
 
         self.tok_embedding = nn.Embedding(VOCAB_SIZE, N_EMBED)
-        self.pos_embedding = nn.Embedding(VOCAB_SIZE, N_EMBED)
+        self.pos_embedding = nn.Embedding(CONTEXT_LENGTH, N_EMBED)
 
-        self.key = nn.Linear(N_EMBED, HEAD_SIZE, bias=False)
-        self.query = nn.Linear(N_EMBED, HEAD_SIZE, bias=False)
-        self.value = nn.Linear(N_EMBED, HEAD_SIZE, bias=False)
+        self.head = MultiHeadAttention(4, N_EMBED // 4)  # TODO: investigate the performance slowdown when the 4 is a 1
 
         self.final_linear = nn.Linear(HEAD_SIZE, VOCAB_SIZE)  # TODO: I guess we do have bias here. figure out why/if it matters.
 
@@ -49,23 +75,12 @@ class Model(nn.Module):
 
         embeddings = self.tok_embedding(x) + self.pos_embedding(self.positions[:T]) # B, T, N_EMBED
         
-        key = self.key(embeddings) # B, T, HEAD_SIZE
-        query = self.key(embeddings) # B, T, HEAD_SIZE
-        value = self.key(embeddings) # B, T, HEAD_SIZE
-
-        affinity = query @ key.transpose(-2, -1)  # B, T, H @ B, T, H. What do we want here? We want a TxT. Because we want a table that maps each token to each other token. That's where the transpose comes in.
-        affinity = affinity.masked_fill(self.attention_mask[:T, :T], float('-inf'))
-        affinity = F.softmax(affinity, dim=2)
-
-        # affinity is B TxT matrices. Value is TxH. so they are good to go. Now we have a list of B TxH matrices.
-
-        head_output = affinity @ value
+        head_output = self.head(embeddings)
 
         logits = self.final_linear(head_output) # now the logits is BxTxVOCAB_SIZE. We have logits for the prediction for the next word after EVERY word in the list of T words.
 
         if targets is not None:
-            # loss = F.cross_entropy(logits.transpose(-2, -1), targets)
-            loss = F.cross_entropy(logits.view(B*T, -1), targets.view(B*T))
+            loss = F.cross_entropy(logits.transpose(-2, -1), targets)
 
             return logits, loss
 
@@ -93,7 +108,10 @@ print('len', len(tokens))
 
 BATCH_SIZE = 1000
 
+t1 = time.perf_counter()
+
 for i in range(100_000):
+
     indices = torch.randint(0, len(tokens) - CONTEXT_LENGTH, (BATCH_SIZE, 1)).repeat(1, CONTEXT_LENGTH) + torch.arange(CONTEXT_LENGTH)
 
     train_x = tokens[indices].to(device)
