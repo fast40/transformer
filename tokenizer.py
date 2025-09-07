@@ -21,7 +21,7 @@ def merge(x, new_token, new_token_id):
 def make_tokens(chars):
     tokens = [[i] for i in range(128)]  # add the og chars
 
-    for new_token in tqdm(range(2048 - 128)):
+    for new_token in tqdm(range(2**15 - 128)):
         pair, occurrances = max(Counter(zip(chars, chars[1:])).items(), key=lambda x: x[1])
 
         if occurrances == 1:
@@ -52,7 +52,8 @@ if __name__ == '__main__':
             tokens = pickle.load(file)
             print('\n'.join(repr(''.join(chr(c) for c in token)) for token in tokens))
             t = [''.join(chr(c) for c in token) for token in tokens]
-            print('\n'.join(repr(x) for x in sorted(t)))
+            with open('t.txt', 'w') as f:
+                print('\n'.join(repr(x) for x in sorted(t)), file=f)
             # print('RIAR LAUR' in t)
         print('tokens.bin already exists. quitting.')
         quit()
